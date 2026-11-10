@@ -1,6 +1,7 @@
-name: Build the flutter version of the RustDesk
+name: Build Sysdata RustDesk Windows
 
 on:
+  workflow_dispatch:
   workflow_call:
     inputs:
       upload-artifact:
@@ -20,64 +21,31 @@ env:
   RUST_VERSION: "1.75"
   LLVM_VERSION: "15.0.6"
   FLUTTER_VERSION: "3.24.5"
-  TAG_NAME: "${{ inputs.upload-tag }}"
+  TAG_NAME: "nightly"
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
-  VCPKG_CMAKE_VERSION: "4.3.0"
   VERSION: "1.5.3"
-  UPLOAD_ARTIFACT: "${{ inputs.upload-artifact }}"
-  PUBLISH_UPDATE_METADATA: "${{ inputs.publish-update-metadata }}"
-  SIGN_BASE_URL: "${{ secrets.SIGN_BASE_URL }}-2"
+  UPLOAD_ARTIFACT: "true"
 
 jobs:
-  validate-update-metadata-keys:
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout source code
-        if: ${{ inputs.publish-update-metadata }}
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          persist-credentials: false
-
   generate-bridge:
-    needs: [validate-update-metadata-keys]
     uses: ./.github/workflows/bridge.yml
 
   build-RustDeskTempTopMostWindow:
-    needs: [validate-update-metadata-keys]
     uses: ./.github/workflows/third-party-RustDeskTempTopMostWindow.yml
-    strategy:
-      fail-fast: false
-      matrix:
-        job:
-          - { target: windows-2022, platform: x64 }
     with:
-      upload-artifact: ${{ inputs.upload-artifact }}
-      target: ${{ matrix.job.target }}
+      upload-artifact: true
+      target: windows-2022
       configuration: Release
-      platform: ${{ matrix.job.platform }}
+      platform: x64
       target_version: Windows10
 
   build-for-windows-flutter:
-    name: ${{ matrix.job.target }}
+    name: windows-x86_64
     needs: [build-RustDeskTempTopMostWindow, generate-bridge]
-    runs-on: ${{ matrix.job.os }}
+    runs-on: windows-2022
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        job:
-          - {
-              target: x86_64-pc-windows-msvc,
-              os: windows-2022,
-              arch: x86_64,
-              flutter-arch: x64,
-              vcpkg-triplet: x64-windows-static,
-              build-args: "--vram",
-            }
     steps:
       - name: Export GitHub Actions cache environment variables
         uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410
@@ -127,12 +95,17 @@ jobs:
           architecture: x64
 
       - name: Replace engine with rustdesk custom flutter engine
+        shell: powershell
         run: |
           flutter doctor -v
           flutter precache --windows
           Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
           Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
-          Copy-Item -Path "windows-x64-release\*" -Destination "$env:FLUTTER_ROOT\bin\cache\artifacts\engine\windows-x64-release\" -Recurse -Force
+          $flutterExe = (Get-Command flutter.bat).Source
+          $flutterRootDir = Split-Path (Split-Path $flutterExe -Parent) -Parent
+          $targetEngineDir = Join-Path $flutterRootDir "bin\cache\artifacts\engine\windows-x64-release"
+          New-Item -ItemType Directory -Force -Path $targetEngineDir | Out-Null
+          Copy-Item -Path "windows-x64-release\*" -Destination $targetEngineDir -Recurse -Force
 
       - name: Patch flutter
         shell: bash
@@ -147,12 +120,12 @@ jobs:
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: ${{ env.SCITER_RUST_VERSION }}
-          targets: ${{ matrix.job.target }}
+          targets: x86_64-pc-windows-msvc
           components: "rustfmt"
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
-          prefix-key: ${{ matrix.job.os }}-sysdata-v2
+          prefix-key: windows-2022-sysdata-v3
 
       - name: Setup vcpkg with Github Actions binary cache
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
@@ -163,17 +136,17 @@ jobs:
 
       - name: Install vcpkg dependencies
         env:
-          VCPKG_DEFAULT_HOST_TRIPLET: ${{ matrix.job.vcpkg-triplet }}
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
         shell: bash
         run: |
-          if ! $VCPKG_ROOT/vcpkg install --triplet ${{ matrix.job.vcpkg-triplet }} --x-install-root="$VCPKG_ROOT/installed"; then
+          if ! $VCPKG_ROOT/vcpkg install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"; then
             exit 1
           fi
 
       - name: Build rustdesk
         run: |
-          python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec ${{ matrix.job.build-args }}
-          mv ./flutter/build/windows/${{ matrix.job.flutter-arch }}/runner/Release ./rustdesk
+          python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+          mv ./flutter/build/windows/x64/runner/Release ./rustdesk
 
           Invoke-WebRequest -Uri https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip -OutFile usbmmidd_v2.zip
           Expand-Archive usbmmidd_v2.zip -DestinationPath .
@@ -192,14 +165,12 @@ jobs:
 
       - name: Download RustDeskTempTopMostWindow artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        if: ${{ inputs.upload-artifact }}
         with:
           name: topmostwindow-artifacts-x64
           path: "./rustdesk"
 
       - name: Build self-extracted executable
         shell: bash
-        if: env.UPLOAD_ARTIFACT == 'true'
         run: |
           sed -i '/dpiAware/d' res/manifest.xml
           pushd ./libs/portable
@@ -207,18 +178,16 @@ jobs:
           python3 ./generate.py -f ../../rustdesk/ -o . -e ../../rustdesk/rustdesk.exe
           popd
           mkdir -p ./SignOutput
-          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.exe
+          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-${{ env.VERSION }}-x86_64.exe
 
       - name: Upload Windows EXE Artifact
-        if: env.UPLOAD_ARTIFACT == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: windows-flutter-${{ matrix.job.arch }}-exe
-          path: ./SignOutput/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.exe
+          name: windows-flutter-x86_64-exe
+          path: ./SignOutput/rustdesk-${{ env.VERSION }}-x86_64.exe
 
       - name: Publish Release
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844
-        if: env.UPLOAD_ARTIFACT == 'true' && env.PUBLISH_UPDATE_METADATA != 'true'
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
