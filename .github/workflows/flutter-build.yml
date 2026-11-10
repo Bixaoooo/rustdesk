@@ -15,12 +15,11 @@ on:
 
 env:
   RENDEZVOUS_SERVER: "rustdesk.sysdatatecnologia.com.br"
-  RS_PUB_KEY: "COLE_AQUI_SUA_KEY_TERMINADA_EM_="
+  RS_PUB_KEY: "37SacUXvkrHNDYgNR8BAzKaGsorof2PrOq3OGLHtpuw="
   SCITER_RUST_VERSION: "1.75"
   RUST_VERSION: "1.75"
   LLVM_VERSION: "15.0.6"
   FLUTTER_VERSION: "3.24.5"
-  FLUTTER_WINDOWS_ARM_VERSION: "3.44.9"
   TAG_NAME: "${{ inputs.upload-tag }}"
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
@@ -38,7 +37,7 @@ jobs:
     steps:
       - name: Checkout source code
         if: ${{ inputs.publish-update-metadata }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
 
@@ -54,7 +53,6 @@ jobs:
       matrix:
         job:
           - { target: windows-2022, platform: x64 }
-          - { target: windows-11-arm, platform: ARM64 }
     with:
       upload-artifact: ${{ inputs.upload-artifact }}
       target: ${{ matrix.job.target }}
@@ -66,22 +64,30 @@ jobs:
     name: ${{ matrix.job.target }}
     needs: [build-RustDeskTempTopMostWindow, generate-bridge]
     runs-on: ${{ matrix.job.os }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
         job:
-          - { target: x86_64-pc-windows-msvc, os: windows-2022, arch: x86_64, flutter-arch: x64, vcpkg-triplet: x64-windows-static, build-args: "--vram" }
-          - { target: aarch64-pc-windows-msvc, os: windows-11-arm, arch: aarch64, flutter-arch: arm64, vcpkg-triplet: arm64-windows-static, build-args: "" }
+          - {
+              target: x86_64-pc-windows-msvc,
+              os: windows-2022,
+              arch: x86_64,
+              flutter-arch: x64,
+              vcpkg-triplet: x64-windows-static,
+              build-args: "--vram",
+            }
     steps:
       - name: Export GitHub Actions cache environment variables
-        uses: actions/github-script@v6
+        uses: actions/github-script@d7906e4ad0b1822421a7e6a35d5ca353c962f410
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           submodules: recursive
 
@@ -95,63 +101,40 @@ jobs:
             $content = $content -replace 'OeVuKk5nlHiXp\+APNn0Y3pC1Iwpwn44JGqrQCsWqmBw=', "$env:RS_PUB_KEY"
             $content = $content -replace '(?m)^(pub const RS_PUB_KEY:\s*&str\s*=\s*)"[^"]*";', "`$1`"$env:RS_PUB_KEY`";"
             Set-Content -Path $configFile -Value $content -NoNewline
-            Write-Host "Servidor ($env:RENDEZVOUS_SERVER) e Key injetados com sucesso no $configFile"
+            Write-Host "Servidor ($env:RENDEZVOUS_SERVER) e Key injetados com sucesso!"
           } else {
-            Write-Error "Arquivo $configFile nao encontrado!"
+            Write-Error "Ficheiro $configFile nao encontrado!"
             exit 1
           }
 
       - name: Restore bridge files
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: ${{ matrix.job.arch == 'aarch64' && 'bridge-artifact-flutter-3.44' || 'bridge-artifact' }}
+          name: bridge-artifact
           path: ./
 
       - name: Install LLVM and Clang
-        uses: KyleMayes/install-llvm-action@v2
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0
         with:
           version: ${{ env.LLVM_VERSION }}
 
       - name: Install flutter
         id: flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225
         with:
           channel: "stable"
-          flutter-version: ${{ matrix.job.arch == 'aarch64' && env.FLUTTER_WINDOWS_ARM_VERSION || env.FLUTTER_VERSION }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           architecture: x64
 
-      - name: Force arm64 Dart SDK + engine
-        if: ${{ matrix.job.arch == 'aarch64' }}
-        run: |
-          $flutterRoot = "${{ steps.flutter.outputs['CACHE-PATH'] }}"
-          Write-Host "PROCESSOR_ARCHITECTURE=$env:PROCESSOR_ARCHITECTURE"
-          Write-Host "Flutter root: $flutterRoot"
-          Remove-Item -Force "$flutterRoot\bin\cache\engine-dart-sdk.stamp" -ErrorAction SilentlyContinue
-          & "$flutterRoot\bin\internal\update_dart_sdk.ps1"
-          $dartVer = & "$flutterRoot\bin\dart.bat" --version 2>&1 | Out-String
-          Write-Host $dartVer
-          if ($dartVer -notmatch "windows_arm64") {
-            Write-Error "Expected an arm64 Dart SDK but got: $dartVer"
-            exit 1
-          }
-          & "$flutterRoot\bin\flutter.bat" precache --windows
-          $engineDir = "$flutterRoot\bin\cache\artifacts\engine"
-          if (-not (Test-Path "$engineDir\windows-arm64-release")) {
-            Write-Error "Expected windows-arm64-release engine artifacts but they are missing."
-            exit 1
-          }
-
       - name: Replace engine with rustdesk custom flutter engine
-        if: ${{ matrix.job.arch == 'x86_64' }}
         run: |
           flutter doctor -v
           flutter precache --windows
           Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
           Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
-          mv -Force windows-x64-release/*  C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release/
+          Copy-Item -Path "windows-x64-release\*" -Destination "$env:FLUTTER_ROOT\bin\cache\artifacts\engine\windows-x64-release\" -Recurse -Force
 
       - name: Patch flutter
-        if: ${{ matrix.job.arch == 'x86_64' }}
         shell: bash
         run: |
           cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff $(dirname $(dirname $(which flutter)))
@@ -160,24 +143,19 @@ jobs:
             git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
           fi
 
-      - name: Patch RustDesk sources for Flutter 3.44 (arm64)
-        if: ${{ matrix.job.arch == 'aarch64' }}
-        shell: bash
-        run: bash .github/patches/apply_flutter_3.44_source_patches.sh
-
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@v1
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: ${{ env.SCITER_RUST_VERSION }}
           targets: ${{ matrix.job.target }}
           components: "rustfmt"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
-          prefix-key: ${{ matrix.job.os }}
+          prefix-key: ${{ matrix.job.os }}-sysdata-v2
 
       - name: Setup vcpkg with Github Actions binary cache
-        uses: lukka/run-vcpkg@v11
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2
         with:
           vcpkgDirectory: C:\vcpkg
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
@@ -186,21 +164,38 @@ jobs:
       - name: Install vcpkg dependencies
         env:
           VCPKG_DEFAULT_HOST_TRIPLET: ${{ matrix.job.vcpkg-triplet }}
+        shell: bash
         run: |
           if ! $VCPKG_ROOT/vcpkg install --triplet ${{ matrix.job.vcpkg-triplet }} --x-install-root="$VCPKG_ROOT/installed"; then
             exit 1
           fi
-        shell: bash
-
-      - name: Set SODIUM_LIB_DIR (arm64)
-        if: ${{ matrix.job.arch == 'aarch64' }}
-        shell: bash
-        run: echo "SODIUM_LIB_DIR=$VCPKG_ROOT/installed/${{ matrix.job.vcpkg-triplet }}/lib" >> "$GITHUB_ENV"
 
       - name: Build rustdesk
         run: |
           python3 .\build.py --portable --flutter --skip-portable-pack --hwcodec ${{ matrix.job.build-args }}
           mv ./flutter/build/windows/${{ matrix.job.flutter-arch }}/runner/Release ./rustdesk
+
+          Invoke-WebRequest -Uri https://github.com/rustdesk-org/rdev/releases/download/usbmmidd_v2/usbmmidd_v2.zip -OutFile usbmmidd_v2.zip
+          Expand-Archive usbmmidd_v2.zip -DestinationPath .
+          Remove-Item -Path usbmmidd_v2\Win32 -Recurse
+          Remove-Item -Path "usbmmidd_v2\deviceinstaller64.exe", "usbmmidd_v2\deviceinstaller.exe", "usbmmidd_v2\usbmmidd.bat"
+          mv -Force .\usbmmidd_v2 ./rustdesk
+
+      - name: find Runner.res
+        continue-on-error: true
+        shell: bash
+        run: |
+          runner_res=$(find . -name "Runner.res");
+          if [ "$runner_res" != "" ]; then
+            cp $runner_res ./libs/portable/Runner.res;
+          fi
+
+      - name: Download RustDeskTempTopMostWindow artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        if: ${{ inputs.upload-artifact }}
+        with:
+          name: topmostwindow-artifacts-x64
+          path: "./rustdesk"
 
       - name: Build self-extracted executable
         shell: bash
@@ -214,10 +209,18 @@ jobs:
           mkdir -p ./SignOutput
           mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.exe
 
-      - name: Upload signed Windows Flutter EXE
-        if: env.UPLOAD_ARTIFACT == 'true' && env.SIGN_BASE_URL == '-2'
-        uses: actions/upload-artifact@v4
+      - name: Upload Windows EXE Artifact
+        if: env.UPLOAD_ARTIFACT == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: windows-flutter-${{ matrix.job.arch }}-exe
           path: ./SignOutput/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.exe
-          if-no-files-found: error
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844
+        if: env.UPLOAD_ARTIFACT == 'true' && env.PUBLISH_UPDATE_METADATA != 'true'
+        with:
+          prerelease: true
+          tag_name: ${{ env.TAG_NAME }}
+          files: |
+            ./SignOutput/rustdesk-*.exe
